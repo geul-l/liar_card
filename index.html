@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>뻥카</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#111827}
+#app{max-width:380px;margin:0 auto;min-height:100vh;padding-bottom:24px}
+button{font-family:inherit;cursor:pointer;border:none;background:none;touch-action:manipulation}
+.btn-p{background:#4f46e5;color:#fff;border-radius:14px;padding:13px 0;font-size:15px;font-weight:500;width:100%}
+.btn-o{border:1px solid rgba(0,0,0,.15);background:#fff;color:#111827;border-radius:14px;padding:13px 0;font-size:14px}
+.btn-r{border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;border-radius:14px;padding:13px 0;font-size:14px;font-weight:500}
+.card{width:44px;height:63px;border-radius:6px;border:1px solid rgba(0,0,0,.15);background:#fff;position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;user-select:none;transition:transform .15s;vertical-align:bottom}
+.card.sel{border:2px solid #4f46e5;background:#eef2ff;transform:translateY(-10px) scale(1.05)}
+.card .tl{position:absolute;top:2px;left:4px;font-size:13px;font-weight:500}
+.card .br{position:absolute;bottom:2px;right:4px;font-size:13px;font-weight:500;transform:rotate(180deg)}
+.card .ct{font-size:18px}
+.cback{width:32px;height:46px;border-radius:6px;background:repeating-linear-gradient(45deg,#4f46e5 0,#4f46e5 2px,#6366f1 0,#6366f1 8px);border:1px solid #4338ca;display:inline-block;flex-shrink:0}
+.pill{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 10px;border-radius:12px;min-width:60px;flex-shrink:0;border:1px solid rgba(0,0,0,.08);background:#f3f4f6}
+.pill.on{border:2px solid #4f46e5;background:#eef2ff}
+.pill .av{width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.15);display:flex;align-items:center;justify-content:center;font-size:13px;color:#6b7280;font-weight:500}
+.pill.on .av{background:#4f46e5;color:#fff}
+.chip{padding:6px 12px;border-radius:10px;border:1px solid rgba(0,0,0,.15);background:#fff;font-size:13px;color:#111827}
+.chip.on{border:2px solid #4f46e5;background:#eef2ff;color:#4f46e5;font-weight:500}
+.fade{animation:fd .25s ease}
+@keyframes fd{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.row{display:flex;gap:8px}
+.muted{color:#6b7280;font-size:13px}
+.tiny{color:#9ca3af;font-size:12px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ── 상태 ─────────────────────────────────────────────
+var S={screen:"intro",introStep:0,mode:null,aiN:2,turnSec:30,reviewSec:5,
+  aiLevel:"normal",aiTemper:"normal",
+  cfg:null,hands:[],table:[],cur:0,rank:null,sel:[],decR:null,
+  passes:0,lastIdx:null,log:[],winner:null,trial:null,phase:"play",rankPend:false,rules:false,
+  timeLeft:30,timerId:null,reviewLeft:0,reviewId:null,aiId:null,paused:false,_reviewNext:0,
+  round:1,scores:[]};
+var SUITS=["♠","♥","♦","♣"],RANKS=["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+var RED={"♥":1,"♦":1};
+
+// ── 효과음 + 진동 ─────────────────────────────────────
+var AC=null;
+function snd(f,d,tp){try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();var o=AC.createOscillator(),g=AC.createGain();o.type=tp||"sine";o.frequency.value=f;g.gain.value=.07;o.connect(g);g.connect(AC.destination);o.start();g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.stop(AC.currentTime+d);}catch(e){}}
+function vib(p){try{if(navigator.vibrate)navigator.vibrate(p);}catch(e){}}
+
+// ── 덱/배분 ───────────────────────────────────────────
+function deck(){var d=[],i,j;for(i=0;i<4;i++)for(j=0;j<13;j++)d.push({r:RANKS[j],s:SUITS[i],jk:false});d.push({r:"JK",s:"",jk:true});d.push({r:"JK",s:"",jk:true});return d;}
+function shuf(a){var b=a.slice(),i,j,t;for(i=b.length-1;i>0;i--){j=Math.floor(Math.random()*(i+1));t=b[i];b[i]=b[j];b[j]=t;}return b;}
+function deal(n){var d=shuf(deck()),h=[],i;for(i=0;i<n;i++)h.push([]);d.forEach(function(c,i){h[i%n].push(c);});return h;}
+
+// ── AI 판단 (난이도 반영) ─────────────────────────────
+// easy: 무모하게 뻥, 진실도 대충 / normal: 기존 수준 / hard: 항상 합리적, 카드 추리
+function aiDecide(hand,rank){
+  var lvl=S.aiLevel;
+  var m=hand.filter(function(c){return c.r===rank||c.jk;});
+  if(rank&&hand.length===1&&m.length===0)return{a:"pass"};
+  if(!rank){
+    var f={};hand.forEach(function(c){if(!c.jk)f[c.r]=(f[c.r]||0)+1;});
+    var ks=Object.keys(f);
+    if(!ks.length){
+      if(hand.length)return{a:"play",cards:hand.slice(0,6),dr:RANKS[Math.floor(Math.random()*13)],bluff:false};
+      return{a:"pass"};
+    }
+    var rk;
+    if(lvl==="easy"){rk=ks[Math.floor(Math.random()*ks.length)];} // 아무 숫자나
+    else{ks.sort(function(a,b){return f[b]-f[a];});rk=ks[0];}     // 가장 많이 든 숫자
+    return{a:"play",cards:hand.filter(function(c){return c.r===rk||c.jk;}).slice(0,Math.min(6,f[rk]+(lvl==="hard"?0:0))),dr:rk,bluff:false};
+  }
+  var truthProb=lvl==="easy"?0.6:lvl==="hard"?1.0:0.75;
+  if(m.length>0&&Math.random()<truthProb){
+    var cnt=lvl==="hard"?Math.min(m.length,6):Math.min(m.length,Math.floor(Math.random()*2)+1);
+    return{a:"play",cards:m.slice(0,cnt),dr:rank,bluff:false};
+  }
+  var bluffProb=lvl==="easy"?0.5:lvl==="hard"?0.22:0.35;
+  if(hand.length>=2&&Math.random()<bluffProb){
+    var bn=lvl==="easy"?Math.min(hand.length-1,Math.floor(Math.random()*3)+1):1;
+    var bc=hand.slice(0,bn);
+    // 실제 카드 기준으로 뻥 여부 판정 (우연히 진실일 수 있음)
+    return{a:"play",cards:bc,dr:rank,bluff:bc.some(function(c){return !c.jk&&c.r!==rank;})};
+  }
+  return{a:"pass"};
+}
+
+// AI 재판 확률 — 성향(기본 확률) + 난이도(추리력)
+// hard는 자기 패를 근거로 추리: 선언 숫자를 자신이 k장 들고 있으면
+// 상대가 낼 수 있는 최대 = (4-k) + 조커 2장. 이를 초과하면 거의 확실한 뻥!
+function aiTrialProb(aiIdx){
+  var lastPl=S.table.length?S.table[S.table.length-1]:null;
+  if(!lastPl)return 0;
+  var base={calm:0.10,normal:0.25,aggr:0.45}[S.aiTemper]||0.25;
+  if(S.aiLevel==="easy")base*=0.6;
+  if(S.aiLevel==="hard"){
+    var own=S.hands[aiIdx].filter(function(c){return c.r===lastPl.dr&&!c.jk;}).length;
+    var ownJk=S.hands[aiIdx].filter(function(c){return c.jk;}).length;
+    var maxOthers=(4-own)+(2-ownJk);
+    if(lastPl.cards.length>maxOthers)return 0.92;      // 수학적으로 거의 불가능 → 강하게 의심
+    if(lastPl.cards.length===maxOthers)base+=0.25;     // 빠듯한 숫자 → 의심 상승
+    if(lastPl.cards.length>=4)base+=0.10;              // 한 번에 많이 내면 의심
+  }
+  return Math.min(0.92,base);
+}
+
+// ── 헬퍼 ─────────────────────────────────────────────
+function pn(i){if(!S.cfg)return"";return i===0?"나":"AI "+i;}
+function addLog(m){S.log.unshift(m);S.log=S.log.slice(0,8);}
+function cardFaceHTML(c,idx,sel,clickable){
+  var col=c.jk?"#4f46e5":RED[c.s]?"#dc2626":"#111827";
+  return '<div class="card'+(sel?" sel":"")+'"'+(clickable?' data-card="'+idx+'"':'')+' style="color:'+col+'">'+
+    '<span class="tl">'+(c.jk?"J":c.r)+'</span><span class="ct">'+(c.jk?"🃏":c.s)+'</span><span class="br">'+(c.jk?"J":c.r)+'</span></div>';
+}
+
+// ── 인트로 ────────────────────────────────────────────
+var INTRO=[
+  {i:"🃏",t:"뻥카에 오신 걸 환영해요!",d:"블러핑 카드 게임입니다.<br>손에 든 카드를 가장 먼저 없애는 사람이 이겨요.",v:'<div style="display:flex;gap:10px;justify-content:center"><span class="cback" style="width:40px;height:56px;transform:rotate(-8deg)"></span><span class="cback" style="width:40px;height:56px"></span><span class="cback" style="width:40px;height:56px;transform:rotate(8deg)"></span></div>'},
+  {i:"🔢",t:"숫자를 정해요",d:"첫 번째 플레이어가 숫자를 정합니다.<br>이후 그 숫자에 맞춰 카드를 냅니다.",v:'<div style="display:flex;gap:8px;justify-content:center">'+[0,1,2,3].map(function(){return '<div style="width:38px;height:52px;border-radius:6px;border:2px solid #4f46e5;background:#eef2ff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:18px;font-weight:500;color:#4f46e5">7<span style="font-size:10px">♠</span></div>';}).join("")+'</div>'},
+  {i:"🤫",t:"진실 혹은 뻥!",d:"카드를 뒷면으로 내면서 숫자를 선언해요.<br>실제로 그 숫자가 아니어도 괜찮아요!",v:'<div style="text-align:center"><div style="background:#4f46e5;color:#fff;font-size:11px;font-weight:500;padding:3px 10px;border-radius:8px;display:inline-block;margin-bottom:8px">7이라고 선언!</div><div style="display:flex;gap:12px;justify-content:center"><span class="cback" style="width:40px;height:56px"></span><span class="cback" style="width:40px;height:56px"></span><span class="cback" style="width:40px;height:56px"></span></div></div>'},
+  {i:"👆",t:"최대 6장까지",d:"같은 숫자 4장 + 조커 2장<br>총 최대 6장까지 한 번에 낼 수 있어요.",v:'<div style="display:flex;gap:5px;justify-content:center;align-items:center">'+SUITS.map(function(s){return '<div style="width:34px;height:48px;border-radius:5px;border:1px solid rgba(0,0,0,.15);background:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;color:'+(RED[s]?"#dc2626":"#111827")+'">'+s+'</div>';}).join("")+'<span style="color:#6b7280;font-weight:500">+</span><div style="width:34px;height:48px;border-radius:5px;border:1px solid #c7d2fe;background:#eef2ff;display:flex;align-items:center;justify-content:center;font-size:16px">🃏</div><div style="width:34px;height:48px;border-radius:5px;border:1px solid #c7d2fe;background:#eef2ff;display:flex;align-items:center;justify-content:center;font-size:16px">🃏</div></div>'},
+  {i:"🙅",t:"패스할 수 있어요",d:"내고 싶지 않으면 언제든 패스!<br>특히 마지막 1장이 현재 숫자와 다르면<br>뻥을 칠 수 없으니 반드시 패스해야 해요.",v:'<div style="display:flex;flex-direction:column;gap:10px;align-items:center"><span style="padding:8px 24px;border-radius:12px;border:1px solid rgba(0,0,0,.15);background:#fff;font-size:14px;color:#111827">패스</span><span style="font-size:11px;color:#6b7280">낼 카드가 없을 땐 부담 없이 넘기세요</span></div>'},
+  {i:"⚖️",t:"뻥이지!",d:"의심스러우면 재판을 걸 수 있어요.<br>뻥이면 낸 사람이, 진실이면 재판 건 사람이<br>바닥 카드를 모두 가져가요. AI도 의심해요!",v:'<div style="display:flex;gap:10px;justify-content:center"><span style="padding:8px 18px;border-radius:10px;background:#fef2f2;border:1px solid #fca5a5;font-size:13px;color:#dc2626;font-weight:500">뻥이지!</span><span style="padding:8px 18px;border-radius:10px;background:#f0fdf4;border:1px solid #86efac;font-size:13px;color:#16a34a;font-weight:500">진실!</span></div>'},
+  {i:"✋",t:"동작 그만!",d:"누군가 카드를 내면 잠깐 재판 기회가 열려요.<br>이때 누구든 뻥이지로 의심할 수 있어요.<br>더 고민하고 싶을 땐 동작 그만으로 멈추세요.",v:'<div style="display:flex;flex-direction:column;gap:10px;align-items:center"><span style="padding:6px 18px;border-radius:10px;background:#fef3c7;border:1px solid #fcd34d;font-size:14px;color:#b45309;font-weight:600">✋ 동작 그만!</span><span style="font-size:11px;color:#6b7280">타이머를 멈추고 천천히 고민하세요</span></div>'},
+  {i:"🔄",t:"숫자 변경",d:"모두가 패스하면 마지막으로 낸 사람이<br>새 숫자를 정하고, 그 숫자로 카드도 냅니다.",v:'<div style="display:flex;gap:10px;justify-content:center;align-items:center"><span style="padding:6px 16px;border-radius:10px;background:#eef2ff;border:1px solid #c7d2fe;font-size:16px;font-weight:500;color:#4f46e5">7</span><span style="font-size:22px;color:#6b7280">→</span><span style="padding:6px 16px;border-radius:10px;background:#4f46e5;font-size:16px;font-weight:500;color:#fff">K</span></div>'},
+  {i:"🏁",t:"마지막 카드",d:"마지막 카드를 낼 때는 앞면으로 내야 해요.<br>뻥 없이 진짜 카드만 낼 수 있어요.<br>라운드가 끝나면 승수가 쌓여요!",v:'<div style="display:flex;gap:16px;justify-content:center;align-items:center"><span class="cback" style="width:40px;height:56px"></span><span style="font-size:20px;color:#6b7280">vs</span><div style="width:40px;height:56px;border-radius:6px;border:2px solid #16a34a;background:#f0fdf4;display:flex;align-items:center;justify-content:center;font-size:20px;color:#16a34a">♠</div></div>'}
+];
+
+// ── 타이머 ────────────────────────────────────────────
+function stopTimer(){if(S.timerId){clearInterval(S.timerId);S.timerId=null;}}
+function stopReview(){if(S.reviewId){clearInterval(S.reviewId);S.reviewId=null;}}
+function stopAi(){if(S.aiId){clearTimeout(S.aiId);S.aiId=null;}}
+function stopAll(){stopTimer();stopReview();stopAi();}
+
+function startTurn(){
+  stopAll();
+  S.phase="play";
+  S.timeLeft=S.turnSec;
+  updateTimerUI();
+  if(S.cur===0){snd(660,.15);vib(50);}
+  S.timerId=setInterval(function(){
+    if(S.screen!=="game"||S.winner!==null||S.phase!=="play"){stopTimer();return;}
+    if(S.paused)return;
+    S.timeLeft--;
+    if(S.timeLeft===5&&S.cur===0){snd(880,.12);vib(30);}
+    if(S.timeLeft<=0){stopTimer();onTimeout();return;}
+    updateTimerUI();
+  },1000);
+}
+
+function startReview(nextPlayer){
+  stopAll();
+  S.phase="review";
+  S.reviewLeft=S.reviewSec;
+  S._reviewNext=nextPlayer;
+  R();
+  var lastP=S.table.length?S.table[S.table.length-1]:null;
+  // AI 의심: 성향/난이도 기반 확률로 재판
+  if(lastP){
+    var suspects=[];
+    for(var i=1;i<S.cfg.players;i++){
+      if(i!==lastP.playerIdx&&Math.random()<aiTrialProb(i))suspects.push(i);
+    }
+    if(suspects.length){
+      var who=suspects[Math.floor(Math.random()*suspects.length)];
+      var when=600+Math.random()*Math.max(600,(S.reviewSec-2)*1000);
+      S.aiId=setTimeout(function(){
+        S.aiId=null;
+        if(S.phase!=="review"||S.paused||S.screen!=="game"||S.winner!==null)return;
+        stopReview();
+        addLog("🤔 "+pn(who)+"이(가) 의심합니다...");
+        snd(330,.2);vib(40);
+        R();
+        S.aiId=setTimeout(function(){
+          S.aiId=null;
+          if(S.screen!=="game"||S.winner!==null)return;
+          triggerTrial(who);
+        },1100);
+      },when);
+    }
+  }
+  S.reviewId=setInterval(function(){
+    if(S.screen!=="game"||S.winner!==null||S.phase!=="review"){stopReview();return;}
+    if(S.paused)return;
+    S.reviewLeft--;
+    if(S.reviewLeft<=0){stopReview();stopAi();advanceToNext();return;}
+    updateReviewUI();
+  },1000);
+}
+
+function advanceToNext(){
+  stopReview();stopAi();
+  if(S.screen!=="game"||S.winner!==null)return;
+  S.phase="play";
+  S.cur=S._reviewNext;
+  R();startTurn();aiTurn();
+}
+
+function updateTimerUI(){
+  var el=document.getElementById("timerbar");if(!el)return;
+  var col=S.timeLeft<=5?"#dc2626":S.timeLeft<=10?"#f59e0b":"#4f46e5";
+  el.style.width=Math.max(0,S.timeLeft/S.turnSec*100)+"%";el.style.background=col;
+  var num=document.getElementById("timernum");
+  if(num){num.textContent=S.timeLeft+"초";num.style.color=col;}
+}
+function updateReviewUI(){
+  var el=document.getElementById("reviewnum");if(el)el.textContent=S.reviewLeft+"초";
+  var bar=document.getElementById("reviewbar");if(bar)bar.style.width=Math.max(0,S.reviewLeft/S.reviewSec*100)+"%";
+}
+
+function onTimeout(){
+  if(S.cur===0){addLog("⏰ 시간 초과 — 자동 패스");S.rankPend=false;doPass(0);}
+}
+
+function doPass(who){
+  var nc=S.passes+1;
+  if(nc>=S.cfg.players-1&&S.lastIdx!==null){
+    S.rankPend=true;S.cur=S.lastIdx;S.passes=0;
+    addLog("모두 패스! "+pn(S.lastIdx)+" 숫자 변경 후 제출");
+    R();startTurn();aiTurn();return;
+  }
+  S.passes=nc;
+  if(S.table.length>0){startReview((who+1)%S.cfg.players);}
+  else{S.cur=(who+1)%S.cfg.players;R();startTurn();aiTurn();}
+}
+
+// ── 게임 흐름 ─────────────────────────────────────────
+function startMatch(){
+  S.cfg={mode:"ai",players:S.aiN+1};
+  S.round=1;
+  S.scores=[];for(var i=0;i<S.cfg.players;i++)S.scores.push(0);
+  dealRound();
+}
+function dealRound(){
+  S.hands=deal(S.cfg.players);S.table=[];S.cur=0;S.rank=null;S.sel=[];S.decR=null;
+  S.passes=0;S.lastIdx=null;S.log=[];S.winner=null;S.trial=null;S.phase="play";
+  S.rankPend=false;S.paused=false;S.screen="game";
+  R();startTurn();
+}
+function setWinner(i){
+  S.winner=i;
+  S.scores[i]=(S.scores[i]||0)+1;
+  stopAll();
+  snd(784,.4);vib([100,50,100,50,200]);
+  R();
+}
+
+function triggerTrial(acc){
+  if(!S.table.length)return;
+  stopAll();
+  S.paused=false;
+  var last=S.table[S.table.length-1],truth=!last.bluff,accused=last.playerIdx;
+  var all=[];S.table.forEach(function(t){all=all.concat(t.cards);});
+  if(!truth){
+    S.hands[accused]=S.hands[accused].concat(all);
+    S.trial={truth:false,msg:"뻥! "+pn(accused)+"가 바닥 카드를 가져갑니다. ("+pn(acc)+"의 재판 성공)",next:acc};
+    snd(180,.35,"square");vib([90,50,90]);
+  } else {
+    S.hands[acc]=S.hands[acc].concat(all);
+    S.trial={truth:true,msg:"진실! "+pn(acc)+"가 바닥 카드를 가져갑니다. ("+pn(accused)+"의 진실 입증)",next:accused};
+    snd(587,.3);vib(80);
+  }
+  S.table=[];S.rank=null;S.lastIdx=null;S.passes=0;S.rankPend=false;S.phase="trial_result";R();
+}
+
+function aiTurn(){
+  stopAi();
+  if(!S.cfg||S.screen!=="game"||S.winner!==null||S.phase!=="play"||S.cur===0)return;
+  var maxMs=Math.max(2000,(S.turnSec-2)*1000);
+  var delay=2000+Math.random()*(maxMs-2000);
+  S.aiId=setTimeout(function aiAct(){
+    S.aiId=null;
+    if(S.paused&&S.cur!==0&&S.phase==="play"&&S.screen==="game"&&S.winner===null){S.aiId=setTimeout(aiAct,500);return;}
+    if(S.screen!=="game"||S.winner!==null||S.phase!=="play"||S.cur===0)return;
+    var hand=S.hands[S.cur];
+
+    // 숫자 변경 턴: AI가 새 숫자를 정하고 그 숫자로 카드까지 제출
+    if(S.rankPend){
+      var ch=aiDecide(hand,null); // rank=null → 최적 숫자 선택 + 제출
+      if(ch.a==="play"){
+        S.rank=ch.dr;S.rankPend=false;
+        addLog(pn(S.cur)+" 숫자 변경: "+ch.dr);
+        S.hands[S.cur]=hand.filter(function(c){return ch.cards.indexOf(c)<0;});
+        S.table.push({cards:ch.cards,dr:ch.dr,bluff:ch.bluff,playerIdx:S.cur});
+        S.lastIdx=S.cur;S.passes=0;
+        addLog(pn(S.cur)+" "+ch.cards.length+"장 제출");
+        snd(440,.08);
+        if(S.hands[S.cur].length===0){setWinner(S.cur);return;}
+        startReview((S.cur+1)%S.cfg.players);
+      } else {
+        // 낼 수 없으면(이론상 거의 없음) 변경만 하고 패스
+        S.rank=RANKS[Math.floor(Math.random()*13)];S.rankPend=false;
+        addLog(pn(S.cur)+" 숫자 변경: "+S.rank+" (패스)");
+        doPass(S.cur);
+      }
+      return;
+    }
+
+    var dec=aiDecide(hand,S.rank);
+    if(dec.a==="pass"){
+      addLog(pn(S.cur)+" 패스");
+      var nc=S.passes+1;
+      if(nc>=S.cfg.players-1&&S.lastIdx!==null){S.rankPend=true;S.cur=S.lastIdx;S.passes=0;addLog("모두 패스! "+pn(S.lastIdx)+" 숫자 변경 후 제출");R();startTurn();aiTurn();return;}
+      S.passes=nc;
+      if(S.table.length>0){startReview((S.cur+1)%S.cfg.players);}
+      else{S.cur=(S.cur+1)%S.cfg.players;R();startTurn();aiTurn();}
+    }else{
+      S.hands[S.cur]=hand.filter(function(c){return dec.cards.indexOf(c)<0;});
+      S.table.push({cards:dec.cards,dr:dec.dr||S.rank,bluff:dec.bluff,playerIdx:S.cur});
+      if(!S.rank)S.rank=dec.dr;
+      S.lastIdx=S.cur;S.passes=0;
+      addLog(pn(S.cur)+" "+dec.cards.length+"장 제출");
+      snd(440,.08);
+      if(S.hands[S.cur].length===0){setWinner(S.cur);return;}
+      startReview((S.cur+1)%S.cfg.players);
+    }
+  },delay);
+}
+
+// ── 렌더링 ────────────────────────────────────────────
+function R(){document.getElementById("app").innerHTML=render();}
+
+function render(){
+  if(S.screen==="intro")return renderIntro();
+  if(S.screen==="home")return renderHome();
+  if(S.winner!==null)return renderWin();
+  return renderGame();
+}
+
+function renderIntro(){
+  var sl=INTRO[S.introStep];
+  var dots=INTRO.map(function(_,i){
+    return '<span data-dot="'+i+'" style="display:inline-block;width:'+(i===S.introStep?20:6)+'px;height:6px;border-radius:4px;background:'+(i===S.introStep?"#4f46e5":"rgba(0,0,0,.15)")+';cursor:pointer;transition:all .3s"></span>';
+  }).join("");
+  return '<div style="padding:32px 24px;min-height:90vh;display:flex;flex-direction:column">'+
+    '<div style="display:flex;gap:6px;justify-content:center;margin-bottom:24px">'+dots+'</div>'+
+    '<div class="fade" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center">'+
+      '<div style="font-size:44px;margin-bottom:12px">'+sl.i+'</div>'+
+      '<h2 style="font-size:20px;font-weight:500;margin-bottom:10px;text-align:center">'+sl.t+'</h2>'+
+      '<p class="muted" style="text-align:center;line-height:1.8;margin-bottom:20px;font-size:14px">'+sl.d+'</p>'+
+      '<div style="width:100%;border-radius:20px;border:1px solid rgba(0,0,0,.15);background:#f3f4f6;padding:20px 0">'+sl.v+'</div>'+
+    '</div>'+
+    '<div class="row" style="margin-top:24px;align-items:center">'+
+      (S.introStep>0?'<button class="btn-o" id="iprev" style="flex:1">← 이전</button>':'<div style="flex:1"></div>')+
+      '<button class="btn-p" id="inext" style="flex:2">'+(S.introStep<INTRO.length-1?"다음 →":"게임 시작! 🃏")+'</button>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;margin-top:12px"><button id="iskip" class="tiny" style="padding:4px 2px">건너뛰기</button></div>'+
+  '</div>';
+}
+
+function renderHome(){
+  var html='<div style="padding:40px 20px 32px">'+
+    '<div style="text-align:center;margin-bottom:32px"><div style="font-size:48px;margin-bottom:8px">🃏</div>'+
+    '<h1 style="font-size:28px;font-weight:500;margin-bottom:4px">뻥카</h1><p class="muted">블러핑 카드 게임</p></div>';
+  if(!S.mode){
+    html+='<div style="display:flex;flex-direction:column;gap:10px">'+
+      '<button class="btn-o" data-mode="ai" style="text-align:left;padding:16px 20px;border-radius:16px"><div style="font-size:15px;font-weight:500;margin-bottom:2px">AI와 플레이</div><div class="tiny">혼자서 AI 상대와 즐기기</div></button>'+
+      '<button class="btn-o" data-mode="multi" style="text-align:left;padding:16px 20px;border-radius:16px;opacity:.55"><div style="font-size:15px;font-weight:500;margin-bottom:2px">온라인 멀티 🔧</div><div class="tiny">친구들과 함께 — 준비 중</div></button>'+
+      '<button id="reintro" class="tiny" style="margin-top:8px">게임 방법 다시 보기</button></div>';
+  } else if(S.mode==="ai"){
+    html+='<button id="back" class="muted" style="margin-bottom:16px">← 뒤로</button>'+
+      '<p class="muted" style="margin-bottom:8px">AI 수</p><div class="row" style="margin-bottom:14px">'+
+      [2,3,4,5].map(function(n){return '<button class="chip'+(S.aiN===n?" on":"")+'" data-ai="'+n+'" style="flex:1;padding:11px 0">AI '+n+'</button>';}).join("")+'</div>'+
+      '<p class="muted" style="margin-bottom:8px">🧠 난이도</p><div class="row" style="margin-bottom:14px">'+
+      [["easy","쉬움"],["normal","보통"],["hard","어려움"]].map(function(o){return '<button class="chip'+(S.aiLevel===o[0]?" on":"")+'" data-lvl="'+o[0]+'" style="flex:1;padding:11px 0">'+o[1]+'</button>';}).join("")+'</div>'+
+      '<p class="muted" style="margin-bottom:8px">🎭 AI 성향 (재판 빈도)</p><div class="row" style="margin-bottom:14px">'+
+      [["calm","신중"],["normal","보통"],["aggr","공격"]].map(function(o){return '<button class="chip'+(S.aiTemper===o[0]?" on":"")+'" data-tmp="'+o[0]+'" style="flex:1;padding:11px 0">'+o[1]+'</button>';}).join("")+'</div>'+
+      '<p class="muted" style="margin-bottom:8px">⏱ 턴당 제한 시간</p><div class="row" style="margin-bottom:14px">'+
+      [30,60,90,120].map(function(t){return '<button class="chip'+(S.turnSec===t?" on":"")+'" data-sec="'+t+'" style="flex:1;padding:11px 0">'+t+'초</button>';}).join("")+'</div>'+
+      '<p class="muted" style="margin-bottom:8px">⚖️ 재판 유예 시간</p><div class="row" style="margin-bottom:16px">'+
+      [3,5,7,10].map(function(t){return '<button class="chip'+(S.reviewSec===t?" on":"")+'" data-rsec="'+t+'" style="flex:1;padding:11px 0">'+t+'초</button>';}).join("")+'</div>'+
+      '<div style="padding:10px 14px;border-radius:12px;background:#f3f4f6;margin-bottom:16px" class="tiny">총 '+(S.aiN+1)+'명 · 카드 '+Math.floor(54/(S.aiN+1))+'~'+Math.ceil(54/(S.aiN+1))+'장씩'+(S.aiLevel==="hard"?" · 어려움: AI가 자기 패로 뻥을 추리해요!":"")+'</div>'+
+      '<button class="btn-p" id="startai" style="border-radius:16px;padding:16px 0;font-size:16px">게임 시작</button>';
+  } else {
+    html+='<button id="back" class="muted" style="margin-bottom:20px">← 뒤로</button>'+
+      '<div style="padding:24px 20px;border-radius:16px;background:#f3f4f6;text-align:center">'+
+      '<div style="font-size:36px;margin-bottom:10px">🔧</div>'+
+      '<p style="font-size:15px;font-weight:500;margin-bottom:8px">온라인 멀티플레이 준비 중</p>'+
+      '<p class="muted" style="font-size:13px;line-height:1.7">친구들과 각자의 폰에서 함께 플레이하는 기능은<br>서버 연결이 필요해서 준비하고 있어요.<br>지금은 AI 모드로 즐겨주세요!</p></div>';
+  }
+  return html+'</div>';
+}
+
+function renderWin(){
+  var idx=S.scores.map(function(_,i){return i;});
+  idx.sort(function(a,b){return S.scores[b]-S.scores[a];});
+  var topScore=S.scores[idx[0]];
+  var rows=idx.map(function(i,rank){
+    var w=i===S.winner;
+    var leader=S.scores[i]===topScore&&topScore>0;
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;'+(rank<idx.length-1?"border-bottom:1px solid rgba(0,0,0,.08);":"")+(w?"background:#eef2ff":"")+'">'+
+      '<span style="font-size:14px;'+(w?"font-weight:500;color:#4f46e5":"")+'">'+(leader?"👑 ":"")+pn(i)+(w?' <span style="font-size:11px;color:#4f46e5">이번 라운드 승!</span>':"")+'</span>'+
+      '<span class="muted">'+S.scores[i]+'승 · '+S.hands[i].length+'장 남음</span></div>';
+  }).join("");
+  return '<div style="padding:48px 24px;text-align:center"><div style="font-size:56px;margin-bottom:12px">🏆</div>'+
+    '<h2 style="font-weight:500;font-size:22px;margin-bottom:6px">'+pn(S.winner)+' 라운드 승리!</h2>'+
+    '<p class="muted" style="margin-bottom:24px">라운드 '+S.round+' 종료 — 누적 전적</p>'+
+    '<div style="border-radius:16px;border:1px solid rgba(0,0,0,.15);overflow:hidden;margin-bottom:24px">'+rows+'</div>'+
+    '<div class="row">'+
+    '<button class="btn-o" id="gohome" style="flex:1">홈으로</button>'+
+    '<button class="btn-p" id="nextround" style="flex:2;border-radius:14px">다음 라운드 →</button></div></div>';
+}
+
+function renderGame(){
+  var my=S.hands[0]||[],isMe=S.cur===0;
+  var lastP=S.table.length?S.table[S.table.length-1]:null;
+  var mineOnTop=lastP&&lastP.playerIdx===0;
+  var canTrial=lastP!==null&&!mineOnTop;
+  var pr=S.rank||S.decR;
+  var myRankPend=S.rankPend&&isMe&&S.phase==="play";
+
+  var html='<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid rgba(0,0,0,.08)">'+
+    '<button id="exit" class="muted" style="font-size:13px">← 나가기</button>'+
+    '<span class="tiny">R'+S.round+'</span>'+
+    '<span style="padding:4px 14px;border-radius:20px;font-size:13px;font-weight:500;'+(S.rank?"background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe":"background:#f3f4f6;color:#6b7280;border:1px solid rgba(0,0,0,.08)")+'">'+(S.rank?"숫자: "+S.rank:"숫자 미정")+'</span>'+
+    '<button id="rulesbtn" class="muted" style="font-size:13px">룰</button></div>';
+
+  html+='<div style="padding:10px 16px 4px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+    '<span class="tiny">'+(isMe?"내 차례":pn(S.cur)+" 차례")+'</span>'+
+    '<div style="display:flex;align-items:center;gap:10px">'+
+    '<span id="timernum" style="font-size:13px;font-weight:600;color:#4f46e5">'+S.timeLeft+'초</span>'+
+    '<button id="holdbtn" style="font-size:12px;padding:6px 14px;border-radius:10px;font-weight:600;background:#fef3c7;color:#b45309;border:1px solid #fcd34d">✋ 동작 그만!</button>'+
+    '</div></div>'+
+    '<div style="height:6px;border-radius:4px;background:#e5e7eb;overflow:hidden">'+
+    '<div id="timerbar" style="height:100%;border-radius:4px;background:#4f46e5;width:'+Math.max(0,S.timeLeft/S.turnSec*100)+'%;transition:width 1s linear"></div></div></div>';
+
+  if(S.paused){
+    html+='<div style="margin:8px 16px 0;padding:20px 16px;border-radius:16px;border:2px solid #fcd34d;background:#fffbeb;text-align:center">'+
+      '<div style="font-size:40px;margin-bottom:8px">✋</div>'+
+      '<div style="font-size:18px;font-weight:600;color:#b45309;margin-bottom:4px">동작 그만!</div>'+
+      '<div style="font-size:13px;color:#92400e;margin-bottom:16px">타이머가 멈췄어요. 천천히 고민하세요.</div>'+
+      '<button id="resumebtn" style="padding:13px 36px;border-radius:14px;background:#16a34a;color:#fff;font-size:16px;font-weight:600">▶ 게임 재개</button></div>';
+  }
+
+  if(S.rules){
+    html+='<div style="margin:8px 16px;padding:14px 16px;border-radius:16px;border:1px solid rgba(0,0,0,.15);background:#f3f4f6;font-size:12px;line-height:1.8">'+
+      '<strong style="display:block;margin-bottom:6px;font-size:13px">게임 방법</strong>'+
+      '· 정해진 숫자의 카드를 뒷면으로 제출 (거짓 가능)<br>· 최대 4장 + 조커 2장 = 최대 6장<br>· 낼 수 없거나 내기 싫으면 패스 — 모두 패스 시 마지막 낸 사람이 숫자 변경 후 제출<br>· 뻥이지!: 뻥이면 낸 사람이, 진실이면 재판 건 사람이 바닥 수거<br>· 마지막 카드는 앞면(진실)으로만 — 숫자가 다르면 패스'+
+      '<button id="rulesclose" style="display:block;margin-top:8px;color:#4f46e5;font-size:12px">닫기</button></div>';
+  }
+
+  html+='<div style="display:flex;gap:8px;padding:12px 16px;overflow-x:auto">'+
+    S.hands.map(function(hd,i){
+      return '<div class="pill'+(S.cur===i?" on":"")+'"><span class="av">'+pn(i)[0]+'</span>'+
+        '<span style="font-size:11px;'+(S.cur===i?"color:#4f46e5;font-weight:500":"color:#6b7280")+'">'+pn(i)+'</span>'+
+        '<span class="tiny" style="font-size:11px">'+hd.length+'장 · '+(S.scores[i]||0)+'승</span></div>';
+    }).join("")+'</div>';
+
+  var totalT=0;S.table.forEach(function(t){totalT+=t.cards.length;});
+  html+='<div style="margin:0 16px 12px;border-radius:20px;border:1px solid rgba(0,0,0,.15);background:#f3f4f6;padding:16px">'+
+    '<div style="display:flex;justify-content:space-between;margin-bottom:10px"><span class="tiny">바닥 — '+totalT+'장</span>'+
+    (lastP?'<span class="tiny" style="font-size:11px">마지막: '+pn(lastP.playerIdx)+' '+lastP.cards.length+'장 ('+lastP.dr+')</span>':"")+'</div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:50px;align-items:center">'+
+    (S.table.length===0?'<span class="tiny" style="font-size:13px">아직 카드 없음</span>'
+      :S.table.slice(-8).map(function(p){return '<span style="display:inline-flex;gap:2px">'+p.cards.map(function(){return '<span class="cback"></span>';}).join("")+'</span>';}).join(""))+
+    '</div></div>';
+
+  if(S.phase==="review"){
+    html+='<div style="margin:0 16px 12px;padding:14px 16px;border-radius:16px;border:2px solid #c7d2fe;background:#eef2ff">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'+
+      '<span style="font-size:13px;font-weight:600;color:#4f46e5">⚖️ 재판 기회'+(lastP?' — '+pn(lastP.playerIdx)+'의 '+lastP.cards.length+'장 ('+lastP.dr+')':'')+'</span>'+
+      '<span id="reviewnum" style="font-size:13px;font-weight:600;color:#4f46e5">'+S.reviewLeft+'초</span></div>'+
+      '<div style="height:5px;border-radius:4px;background:#c7d2fe;overflow:hidden;margin-bottom:12px"><div id="reviewbar" style="height:100%;background:#4f46e5;width:'+Math.max(0,S.reviewLeft/S.reviewSec*100)+'%;transition:width 1s linear"></div></div>'+
+      (mineOnTop
+        ?'<div class="row"><span style="flex:2;font-size:12px;color:#6b7280;align-self:center">내가 낸 카드예요 — 다른 플레이어를 기다리는 중</span><button class="btn-o" id="reviewskip" style="flex:1">통과</button></div>'
+        :'<div class="row"><button class="btn-r" id="trialbtn" style="flex:2">뻥이지! (재판)</button><button class="btn-o" id="reviewskip" style="flex:1">통과</button></div>')+
+      '</div>';
+  } else if(S.phase==="play"&&canTrial){
+    html+='<div style="margin:0 16px 12px;padding:10px 16px;border-radius:16px;border:1px dashed #fca5a5;background:#fff;display:flex;align-items:center;gap:10px">'+
+      '<span style="font-size:12px;color:#6b7280;flex:1">'+pn(lastP.playerIdx)+'의 카드가 의심된다면?</span>'+
+      '<button class="btn-r" id="trialbtn" style="flex:0 0 auto;padding:10px 24px">뻥이지!</button></div>';
+  }
+
+  if(S.phase==="trial_result"&&S.trial){
+    var tr=S.trial;
+    html+='<div style="margin:0 16px 12px;border-radius:20px;padding:20px 16px;text-align:center;border:2px solid '+(tr.truth?"#16a34a":"#dc2626")+';background:'+(tr.truth?"#f0fdf4":"#fef2f2")+'">'+
+      '<div style="font-size:36px;margin-bottom:8px">'+(tr.truth?"✅":"❌")+'</div>'+
+      '<p style="font-size:16px;font-weight:500;margin-bottom:6px;color:'+(tr.truth?"#16a34a":"#dc2626")+'">'+(tr.truth?"진실!":"뻥!")+'</p>'+
+      '<p style="font-size:13px;margin-bottom:16px;color:'+(tr.truth?"#15803d":"#b91c1c")+'">'+tr.msg+'</p>'+
+      '<button id="trialok" style="padding:10px 32px;border-radius:12px;background:'+(tr.truth?"#16a34a":"#dc2626")+';color:#fff;font-size:14px;font-weight:500">계속하기</button></div>';
+  }
+
+  // 숫자 변경 + 제출 안내 (내 차례)
+  if(myRankPend){
+    html+='<div style="margin:0 16px 12px;padding:14px 16px;border-radius:16px;border:1px solid #c7d2fe;background:#eef2ff">'+
+      '<p style="font-size:13px;font-weight:500;margin-bottom:4px;color:#4f46e5">숫자 변경 — 새 숫자를 고른 뒤 카드를 내세요</p>'+
+      '<p class="tiny" style="margin-bottom:10px">숫자를 선택하면 카드 선택과 제출이 열려요</p>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:6px">'+RANKS.map(function(r){return '<button data-chrank="'+r+'" style="padding:6px 12px;border-radius:10px;border:1px solid #c7d2fe;background:#fff;color:#4f46e5;font-size:13px;font-weight:500">'+r+'</button>';}).join("")+'</div></div>';
+  }
+
+  html+='<div style="margin:0 16px 8px">'+S.log.slice(0,3).map(function(l,i){return '<div class="tiny" style="opacity:'+(1-i*0.3)+';padding:2px 0">'+l+'</div>';}).join("")+'</div>';
+
+  html+='<div style="padding:0 16px;margin-bottom:10px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+    '<span style="font-size:13px;font-weight:500">내 패 <span class="muted" style="font-weight:400">'+my.length+'장</span>'+
+    (isMe&&S.phase==="play"&&!S.rankPend?' <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:#4f46e5;color:#fff">내 차례</span>':"")+'</span>'+
+    '<button id="sort" style="font-size:12px;padding:4px 12px;border-radius:10px;border:1px solid rgba(0,0,0,.15);background:#f3f4f6;color:#6b7280">정렬</button></div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:5px">'+
+    my.map(function(c,i){return cardFaceHTML(c,i,S.sel.indexOf(i)>=0,isMe&&S.phase==="play"&&!S.rankPend);}).join("")+
+    '</div></div>';
+
+  if(isMe&&S.phase==="play"&&!S.rankPend&&!S.rank&&S.sel.length>0){
+    html+='<div style="padding:0 16px;margin-bottom:10px"><p class="tiny" style="margin-bottom:6px">제출할 숫자 선언</p>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:5px">'+RANKS.map(function(r){return '<button class="chip'+(S.decR===r?" on":"")+'" data-decr="'+r+'" style="padding:5px 10px">'+r+'</button>';}).join("")+'</div></div>';
+  }
+
+  if(isMe&&S.phase==="play"&&!S.rankPend){
+    html+='<div class="row" style="padding:0 16px">'+
+      '<button class="btn-o" id="pass" style="flex:1">패스</button>'+
+      '<button class="btn-p" id="play" style="flex:2;'+(!S.sel.length||!pr?"background:#f3f4f6;color:#9ca3af":"")+'"'+(!S.sel.length||!pr?" disabled":"")+'>제출'+(S.sel.length?" ("+S.sel.length+"장)":"")+'</button></div>';
+  } else if(!isMe&&S.phase==="play"){
+    html+='<div style="text-align:center"><span class="muted">'+pn(S.cur)+' 생각 중...</span></div>';
+  }
+
+  return html;
+}
+
+// ── 전역 클릭 위임 ────────────────────────────────────
+document.getElementById("app").addEventListener("click",function(e){
+  var t=e.target;
+  while(t&&t!==this){
+    if(t.id||(t.getAttribute&&(t.getAttribute("data-card")!==null||t.getAttribute("data-dot")!==null||t.getAttribute("data-mode")!==null||t.getAttribute("data-ai")!==null||t.getAttribute("data-sec")!==null||t.getAttribute("data-rsec")!==null||t.getAttribute("data-lvl")!==null||t.getAttribute("data-tmp")!==null||t.getAttribute("data-decr")!==null||t.getAttribute("data-chrank")!==null)))break;
+    t=t.parentNode;
+  }
+  if(!t||t===this||!t.getAttribute)return;
+  var id=t.id||"";
+  var d=function(n){return t.getAttribute("data-"+n);};
+
+  if(id==="inext"){if(S.introStep<INTRO.length-1){S.introStep++;}else{S.screen="home";}R();return;}
+  if(id==="iprev"){S.introStep--;R();return;}
+  if(id==="iskip"){S.screen="home";R();return;}
+  if(d("dot")!==null&&S.screen==="intro"){S.introStep=+d("dot");R();return;}
+
+  if(d("mode")!==null){S.mode=d("mode");R();return;}
+  if(id==="reintro"){S.screen="intro";S.introStep=0;R();return;}
+  if(id==="back"){S.mode=null;R();return;}
+  if(d("ai")!==null){S.aiN=+d("ai");R();return;}
+  if(d("lvl")!==null){S.aiLevel=d("lvl");R();return;}
+  if(d("tmp")!==null){S.aiTemper=d("tmp");R();return;}
+  if(d("sec")!==null){S.turnSec=+d("sec");R();return;}
+  if(d("rsec")!==null){S.reviewSec=+d("rsec");R();return;}
+  if(id==="startai"){startMatch();return;}
+
+  if(id==="gohome"){stopAll();S.screen="home";S.mode=null;S.winner=null;R();return;}
+  if(id==="nextround"){S.round++;dealRound();return;}
+
+  if(id==="exit"){stopAll();S.screen="home";S.mode=null;R();return;}
+  if(id==="rulesbtn"){S.rules=!S.rules;R();return;}
+  if(id==="rulesclose"){S.rules=false;R();return;}
+  if(id==="holdbtn"){S.paused=true;addLog("✋ 동작 그만! (일시정지)");R();return;}
+  if(id==="resumebtn"){S.paused=false;addLog("▶ 게임 재개");R();updateTimerUI();updateReviewUI();return;}
+
+  if(id==="trialbtn"){triggerTrial(0);return;}
+  if(id==="reviewskip"){stopReview();stopAi();advanceToNext();return;}
+  if(id==="trialok"){var n=S.trial.next;S.trial=null;S.phase="play";S.cur=n;S.sel=[];S.decR=null;S.rankPend=false;R();startTurn();aiTurn();return;}
+
+  if(id==="sort"){
+    var o=RANKS.concat(["JK"]);
+    var selCards=S.sel.map(function(i){return S.hands[0][i];});
+    S.hands[0].sort(function(a,b){return o.indexOf(a.r)-o.indexOf(b.r);});
+    S.sel=selCards.map(function(c){return S.hands[0].indexOf(c);});
+    R();return;
+  }
+
+  if(d("card")!==null){
+    var i=+d("card"),p=S.sel.indexOf(i);
+    if(p>=0){S.sel.splice(p,1);}
+    else{
+      if(S.sel.length>=6){addLog("⚠️ 최대 6장까지만 낼 수 있어요");R();return;}
+      S.sel.push(i);
+    }
+    snd(520,.05);
+    R();return;
+  }
+
+  if(d("decr")!==null){S.decR=d("decr");R();return;}
+
+  // 숫자 변경 (내 차례): 새 숫자만 정하고 턴 유지 → 카드를 골라 제출
+  if(d("chrank")!==null){
+    S.rank=d("chrank");S.rankPend=false;S.sel=[];
+    addLog("숫자 변경: "+S.rank+" — 이제 카드를 내세요");
+    R();return;
+  }
+
+  if(id==="pass"){addLog("내가 패스");doPass(0);return;}
+
+  if(id==="play"){
+    var pr=S.rank||S.decR;if(!S.sel.length||!pr)return;
+    if(S.sel.length>6){addLog("⚠️ 최대 6장까지만 낼 수 있어요");R();return;}
+    var cards=S.sel.map(function(i){return S.hands[0][i];});
+    var bluff=cards.some(function(c){return !c.jk&&c.r!==pr;});
+    var nh=S.hands[0].filter(function(c,i){return S.sel.indexOf(i)<0;});
+    if(nh.length===0&&bluff){addLog("⚠️ 마지막 카드는 진실만 낼 수 있어요 — 숫자가 다르면 패스하세요");R();return;}
+    S.hands[0]=nh;
+    S.table.push({cards:cards,dr:pr,bluff:bluff,playerIdx:0});
+    if(!S.rank)S.rank=pr;
+    S.lastIdx=0;S.passes=0;S.sel=[];S.decR=null;S.rankPend=false;
+    addLog("내가 "+cards.length+"장 제출 ("+pr+")");
+    snd(440,.08);vib(30);
+    if(S.hands[0].length===0){setWinner(0);return;}
+    startReview(1%S.cfg.players);
+    return;
+  }
+});
+
+R();
+</script>
+</body>
+</html>
